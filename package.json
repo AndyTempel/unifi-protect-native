@@ -52,7 +52,7 @@
   },
   "main": "dist/index.js",
   "scripts": {
-    "build": "shx rm -rf ./dist && tsc && shx chmod a+x ./dist/util/**.js",
+    "build": "shx rm -rf ./dist && tsc",
     "build-docs": "shx rm -f ./docs/[^CO]*.md && npx typedoc",
     "clean": "shx rm -rf ./dist",
     "lint": "eslint --max-warnings=10 eslint.config.mjs src/**.ts",
