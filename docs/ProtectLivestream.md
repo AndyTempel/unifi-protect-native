@@ -55,7 +55,6 @@ Options for configuring a livestream session.
 | <a id="lens"></a> `lens` | `number` | Optionally specify alternate cameras on a Protect device, such as a package camera. |
 | <a id="requestid"></a> `requestId` | `string` | Optionally specify a request ID to the Protect controller. This is primarily used for logging purposes. |
 | <a id="segmentlength"></a> `segmentLength` | `number` | Optionally specify the segment length, in milliseconds, of each fMP4 segment. Defaults to 100ms. |
-| <a id="usestream"></a> `useStream` | `boolean` | If `true`, a Node.js Readable stream interface will be created for consuming raw fMP4 segments instead of using EventEmitter events. Defaults to false. |
 
 ## Events
 
@@ -78,17 +77,14 @@ Those are the basics that gets us up and running.
  close       - Emitted when the livestream WebSocket connection has been closed. This event fires after cleanup is complete and the connection is fully
                      terminated.
  codec       - Emitted when codec information is received from the controller. The codec string is passed as an argument in the format "codec,container"
-                     (e.g., "hev1.1.6.L150,mp4a.40.2"). Only emitted when not using stream mode.
+                     (e.g., "hev1.1.6.L150,mp4a.40.2").
  initsegment - Emitted when an fMP4 initialization segment (FTYP and MOOV boxes) is received. The complete initialization segment Buffer is passed as an
-                     argument. Only emitted when not using stream mode.
- mdat        - Emitted when an MDAT box (media data) has been received as part of a segment. The MDAT Buffer is passed as an argument. Only emitted when not
-                     using stream mode.
+                     argument.
+ mdat        - Emitted when an MDAT box (media data) has been received as part of a segment. The MDAT Buffer is passed as an argument.
  message     - Emitted when any complete fMP4 segment is received, whether initialization or regular segment. The complete segment Buffer is passed as an
-                     argument. Only emitted when not using stream mode.
- moof        - Emitted when a MOOF box (movie fragment metadata) has been received as part of a segment. The MOOF Buffer is passed as an argument. Only emitted
-                     when not using stream mode.
- segment     - Emitted when a non-initialization fMP4 segment (MOOF/MDAT pair) is fully assembled. The complete segment Buffer is passed as an argument. Only
-                     emitted when not using stream mode.
+                     argument.
+ moof        - Emitted when a MOOF box (movie fragment metadata) has been received as part of a segment. The MOOF Buffer is passed as an argument.
+ segment     - Emitted when a non-initialization fMP4 segment (MOOF/MDAT pair) is fully assembled. The complete segment Buffer is passed as an argument.
  timestamps  - Emitted when decode timestamp information is received from the controller. An array of numbers containing the decode timestamps of frames in the
                      next segment is passed as an argument, mirroring the tfdt box contents.
 
@@ -165,21 +161,6 @@ The initialization segment that must be at the start of every fMP4 stream.
 
 Returns the initialization segment if it exists, or `null` otherwise.
 
-##### stream
-
-###### Get Signature
-
-```ts
-get stream(): Nullable<Readable>;
-```
-
-Retrieve a Node.js Readable stream if `useStream` was set to true (defaults to false) when starting the livestream.
-Otherwise, returns `null`.
-
-###### Returns
-
-`Nullable`\<`Readable`\>
-
 #### Methods
 
 ##### getInitSegment()
@@ -244,8 +225,7 @@ Returns `true` if the livestream has successfully started, `false` otherwise.
 
 ###### Remarks
 
-Once a livestream session has started, the following events can be listened for (unless you've specified `useStream` in `options`, in which case only the
-         `close` event is available):
+Once a livestream session has started, the following events can be listened for:
 
 | Event         | Description                                                                                                                                  |
 |---------------|----------------------------------------------------------------------------------------------------------------------------------------------|
@@ -255,3 +235,169 @@ Once a livestream session has started, the following events can be listened for 
 | `message`     | An fMP4 segment has been received. No distinction is made between segment types. The segment will be passed as an argument to any listeners. |
 | `segment`     | A non-initialization fMP4 segment has been received. The segment will be passed as an argument to any listeners.                             |
 | `timestamps`  | An array of numbers containing the decode timestamps of the frames in the next segment. It mirrors what is provided in the `tfdt` box.       |
+
+## Playing a livestream in Expo / React Native
+
+`expo-av` is now deprecated. The maintained replacement is [`expo-video`](https://docs.expo.dev/versions/latest/sdk/video/), which ships with the same native
+players (AVFoundation / ExoPlayer) but exposes a new API surface. More importantly, writing every fragment to disk quickly becomes a bottleneck when you need to
+show multiple cameras or you are running on devices with minimal free storage. A more resilient solution is to stream the fragments from memory through a tiny
+HTTP endpoint and let `expo-video` connect to `http://127.0.0.1`. This keeps storage usage near zero and still uses the native decoders.
+
+### Overview of the in-memory chunk server approach
+
+1. **Install dependencies** (requires a development build because we need native TCP sockets):
+
+    ```bash
+    npx expo install expo-video
+    npx expo install react-native-tcp-socket
+    ```
+
+    `react-native-tcp-socket` exposes a minimal TCP server API we can use to serve HTTP chunked responses directly from memory. Make sure you rebuild the Expo dev
+    client (`expo run:android` / `expo run:ios`).
+
+2. **Start the Protect livestream** exactly as before:
+
+    ```ts
+    const api = new ProtectApi();
+    await api.login("nvr.local", "username", "password");
+    await api.getBootstrap();
+    const livestream = api.createLivestream();
+    await livestream.start(cameraId, 0, { requestId: "front-door" });
+    ```
+
+3. **Create a lightweight chunk server**. Each camera stream is identified by a key so that multiple `Video` components can subscribe independently. The server
+    buffers only the latest initialization segment plus a handful of recent fragments, so storage stays constant regardless of how long the stream has been running:
+
+    ```ts
+   import EventEmitter from "eventemitter3";
+   import TcpSocket from "react-native-tcp-socket";
+
+    type Client = { id: string; socket: TcpSocket.Socket };
+
+    class LivestreamChunkServer {
+       private readonly clients = new Map<string, Set<Client>>();
+       private readonly initSegments = new Map<string, Buffer>();
+       private readonly server: TcpSocket.Server;
+
+       constructor(port = 18530) {
+          this.server = TcpSocket.createServer((socket) => this.handleSocket(socket));
+          this.server.listen({ port, host: "127.0.0.1" });
+       }
+
+       dispose(): void {
+          this.server.close();
+          this.clients.clear();
+          this.initSegments.clear();
+       }
+
+       registerStream(streamId: string, emitter: EventEmitter): void {
+          const broadcast = (segment: Buffer): void => this.push(streamId, segment);
+          emitter.on("initsegment", (segment: Buffer) => {
+             this.initSegments.set(streamId, Buffer.from(segment));
+             broadcast(segment);
+          });
+          emitter.on("segment", broadcast);
+       }
+
+       private handleSocket(socket: TcpSocket.Socket): void {
+          socket.once("data", (data: Buffer) => {
+             const requestLine = data.toString("ascii").split("\r\n")[0];
+             const [, path] = requestLine.split(" ");
+             const streamId = path?.slice(1) ?? "";
+             this.addClient(streamId, socket);
+          });
+       }
+
+       private addClient(streamId: string, socket: TcpSocket.Socket): void {
+          const entry = this.clients.get(streamId) ?? new Set<Client>();
+          entry.add({ id: socket.remoteAddress ?? Math.random().toString(), socket });
+          this.clients.set(streamId, entry);
+
+          socket.write([
+             "HTTP/1.1 200 OK",
+             "Content-Type: video/mp4",
+             "Transfer-Encoding: chunked",
+             "Connection: close",
+             "\r\n"
+          ].join("\r\n"));
+
+          const init = this.initSegments.get(streamId);
+          if(init) {
+             this.writeChunk(socket, init);
+          }
+
+          socket.on("close", () => {
+             for(const client of entry) {
+                if(client.socket === socket) {
+                   entry.delete(client);
+                   break;
+                }
+             }
+          });
+       }
+
+       private push(streamId: string, segment: Buffer): void {
+          const clients = this.clients.get(streamId);
+          if(!clients?.size) {
+             return;
+          }
+          for(const client of clients) {
+             this.writeChunk(client.socket, segment);
+          }
+       }
+
+       private writeChunk(socket: TcpSocket.Socket, chunk: Buffer): void {
+          const size = chunk.length.toString(16);
+          socket.write(size + "\r\n");
+          socket.write(chunk);
+          socket.write("\r\n");
+       }
+    }
+    ```
+
+4. **Wire the livestream into the server**:
+
+    ```ts
+    const chunkServer = new LivestreamChunkServer();
+    chunkServer.registerStream("front-door", livestream);
+    ```
+
+5. **Render with `expo-video`**. Each player instance points at a different local URL (one per camera). Because the transport is HTTP chunked transfer, ExoPlayer
+    and AVFoundation treat it as a never-ending MP4 file without ever touching disk:
+
+    ```tsx
+    import { VideoView } from "expo-video";
+
+    function CameraTile({ streamId }: { streamId: string }): JSX.Element {
+       return (
+          <VideoView
+             style={{ width: "100%", aspectRatio: 16 / 9 }}
+             source={{ uri: `http://127.0.0.1:18530/${streamId}` }}
+             nativeControls={false}
+             shouldPlay
+             isLooping
+             resizeMode="contain"
+          />
+       );
+    }
+    ```
+
+6. **Cleanup**: stop the livestream and close any sockets when the screen unmounts to avoid dangling listeners:
+
+    ```ts
+    return () => {
+       livestream.stop();
+       chunkServer.dispose?.();
+    };
+    ```
+
+### Why this scales better than temporary files
+
+- **No persistent writes**: fragments exist only in memory and are discarded once sent to the clients. Low-storage devices and multi-camera grids no longer risk
+   running out of disk.
+- **Instant multi-view**: every `<VideoView>` subscribes to the same stream ID, so a single camera feed can power multiple tiles without duplicating storage or
+   connection overhead.
+- **Graceful recovery**: when a player reconnects it immediately receives the cached initialization segment followed by the most recent data, keeping playback in
+   sync.
+
+You can still fall back to the file-based approach for rapid prototyping, but the chunk-server flow above is the recommended long-term solution for Expo projects.

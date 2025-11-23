@@ -50,9 +50,6 @@
   "engines": {
     "node": ">=20"
   },
-  "bin": {
-    "ufp": "dist/util/ufp.js"
-  },
   "main": "dist/index.js",
   "scripts": {
     "build": "shx rm -rf ./dist && tsc && shx chmod a+x ./dist/util/**.js",
@@ -75,6 +72,8 @@
     "typescript-eslint": "8.44.1"
   },
   "dependencies": {
+    "buffer": "6.0.3",
+    "eventemitter3": "5.0.1",
     "undici": "7.16.0"
   }
 }

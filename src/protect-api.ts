@@ -58,17 +58,28 @@
  *
  * @module ProtectApi
  */
-import { Agent, type Dispatcher, type ErrorEvent, type MessageEvent, Pool, WebSocket, errors, interceptors, request } from "undici";
+import type { Dispatcher, ErrorEvent, MessageEvent } from "undici";
+import { EventEmitter } from "node:events";
+import { STATUS_CODES } from "node:http";
+import util from "node:util";
+import { getPlatformAdapter } from "./platform/index.js";
+import { ProtectApiEvents } from "./protect-api-events.js";
+import { ProtectLivestream } from "./protect-api-livestream.js";
+import type { ProtectLogging } from "./protect-logging.js";
 import type { DeepIndexable, Nullable, ProtectCameraChannelConfigInterface, ProtectCameraConfig, ProtectCameraConfigInterface, ProtectCameraConfigPayload,
   ProtectChimeConfig, ProtectChimeConfigPayload, ProtectLightConfig, ProtectLightConfigPayload, ProtectNvrBootstrap, ProtectNvrConfig, ProtectNvrConfigPayload,
   ProtectNvrUserConfig, ProtectSensorConfig, ProtectSensorConfigPayload, ProtectViewerConfig, ProtectViewerConfigPayload } from "./protect-types.js";
 import { PROTECT_API_ERROR_LIMIT, PROTECT_API_RETRY_INTERVAL, PROTECT_API_TIMEOUT } from "./settings.js";
-import { EventEmitter } from "node:events";
-import { ProtectApiEvents } from "./protect-api-events.js";
-import { ProtectLivestream } from "./protect-api-livestream.js";
-import type { ProtectLogging } from "./protect-logging.js";
-import { STATUS_CODES } from "node:http";
-import util from "node:util";
+
+const platform = getPlatformAdapter();
+
+if(!platform.isSupported) {
+
+  throw new Error(platform.warning ?? "Current runtime platform is not supported yet.");
+}
+
+const { Agent, Pool, WebSocket, errors, interceptors, request } = platform.net;
+type PlatformWebSocket = InstanceType<typeof WebSocket>;
 
 /**
  * The Protect device types we know about and are available to us.
@@ -231,7 +242,7 @@ interface InternalRetrieveOptions extends RetrieveOptions {
 export class ProtectApi extends EventEmitter {
 
   private _bootstrap: Nullable<ProtectNvrBootstrap>;
-  private _eventsWs: Nullable<WebSocket>;
+  private _eventsWs: Nullable<PlatformWebSocket>;
 
   private apiErrorCount: number;
   private apiLastSuccess: number;

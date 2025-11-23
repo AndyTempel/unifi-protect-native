@@ -4,6 +4,12 @@
  */
 /** @internal */
 
+import { Buffer } from "buffer";
+
+// Ensure Buffer is available in Expo / React Native runtimes.
+const globalWithBuffer = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
+globalWithBuffer.Buffer ??= Buffer;
+
 // Export our API.
 export * from "./protect-api.js";
 export type { ProtectLivestream } from "./protect-api-livestream.js";
