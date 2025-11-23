@@ -44,12 +44,13 @@
 /* eslint-enable @stylistic/max-len */
 import { Buffer } from "buffer";
 import EventEmitter from "eventemitter3";
+import type { Nullable } from "./protect-types.js";
 import type { ProtectApi } from "./protect-api.js";
 import type { ProtectLogging } from "./protect-logging.js";
-import type { Nullable } from "./protect-types.js";
 import { PROTECT_API_TIMEOUT } from "./settings.js";
 
 const globalWithBuffer = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
+
 globalWithBuffer.Buffer ??= Buffer;
 type PlatformWebSocket = WebSocket;
 
@@ -276,6 +277,8 @@ export class ProtectLivestream extends EventEmitter {
     }
 
     try {
+
+
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = "arraybuffer";
 
@@ -429,7 +432,7 @@ export class ProtectLivestream extends EventEmitter {
 
       let offset = 0;
 
-      for(;;) {
+      for(; ;) {
 
         // If we have less than 4 bytes remaining, it's an incomplete packet and we don't have enough information to decode it without the packet header. We save it to
         // prepend to the next packet that comes across.

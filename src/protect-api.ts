@@ -58,14 +58,16 @@
  *
  * @module ProtectApi
  */
-import EventEmitter from "eventemitter3";
 import { ProtectApiEvents } from "./protect-api-events.js";
 import { ProtectLivestream } from "./protect-api-livestream.js";
 import type { ProtectLogging } from "./protect-logging.js";
-import type { DeepIndexable, Nullable, ProtectCameraChannelConfigInterface, ProtectCameraConfig, ProtectCameraConfigInterface, ProtectCameraConfigPayload,
-  ProtectChimeConfig, ProtectChimeConfigPayload, ProtectLightConfig, ProtectLightConfigPayload, ProtectNvrBootstrap, ProtectNvrConfig, ProtectNvrConfigPayload,
-  ProtectNvrUserConfig, ProtectSensorConfig, ProtectSensorConfigPayload, ProtectViewerConfig, ProtectViewerConfigPayload } from "./protect-types.js";
+import type {
+  DeepIndexable, Nullable, ProtectCameraChannelConfigInterface, ProtectCameraConfig, ProtectCameraConfigInterface, ProtectCameraConfigPayload,
+  ProtectChimeConfig, ProtectChimeConfigPayload, ProtectLightConfig, ProtectLightConfigPayload, ProtectNvrBootstrap, ProtectNvrConfig,
+  ProtectNvrConfigPayload, ProtectNvrUserConfig, ProtectSensorConfig, ProtectSensorConfigPayload, ProtectViewerConfig, ProtectViewerConfigPayload
+} from "./protect-types.js";
 import { PROTECT_API_ERROR_LIMIT, PROTECT_API_RETRY_INTERVAL, PROTECT_API_TIMEOUT } from "./settings.js";
+import EventEmitter from "eventemitter3";
 
 type PlatformWebSocket = WebSocket;
 
@@ -107,7 +109,7 @@ const formatError = (value: unknown): string => {
 
     return JSON.stringify(value, null, 2);
 
-  } catch {
+  } catch{
 
     return String(value);
   }
@@ -505,8 +507,15 @@ export class ProtectApi extends EventEmitter {
 
     const response = await this.retrieve(this.getApiEndpoint("bootstrap"));
 
+    if(!response) {
+
+      this.logRetry("Unable to retrieve the UniFi Protect controller configuration.", retry);
+
+      return retry ? this.bootstrapController(false) : false;
+    }
+
     // Something went wrong. Retry the bootstrap attempt once, and then we're done.
-    if(!this.responseOk(response?.status)) {
+    if(!this.responseOk(response.status)) {
 
       this.logRetry("Unable to retrieve the UniFi Protect controller configuration.", retry);
 
@@ -518,7 +527,7 @@ export class ProtectApi extends EventEmitter {
 
     try {
 
-      data = await response!.json() as ProtectNvrBootstrap;
+      data = await response.json() as ProtectNvrBootstrap;
 
     } catch(error) {
 
@@ -592,6 +601,7 @@ export class ProtectApi extends EventEmitter {
       ws.addEventListener("error", (event: ProtectErrorEvent): void => {
 
         const details = event.error ?? event.message ?? "Unknown error";
+
         this.log.error("Events API error: %s", formatError(details));
 
         ws.close();
@@ -990,7 +1000,7 @@ export class ProtectApi extends EventEmitter {
     this.log.debug("%s: %s", this.getFullName(device), formatError(payload));
 
     // Update Protect with the new configuration.
-    const response = await this.retrieve(this.getApiEndpoint(device.modelKey) + (device.modelKey === "nvr" ? "" :  "/" + device.id), {
+    const response = await this.retrieve(this.getApiEndpoint(device.modelKey) + (device.modelKey === "nvr" ? "" : "/" + device.id), {
 
       body: JSON.stringify(payload),
       method: "PATCH"
@@ -1618,6 +1628,8 @@ export class ProtectApi extends EventEmitter {
     }
 
     const fetchOptions: RequestInit = {
+
+
       ...restOptions,
       headers,
       signal: controller.signal,

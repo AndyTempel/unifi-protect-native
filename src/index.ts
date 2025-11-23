@@ -8,6 +8,7 @@ import { Buffer } from "buffer";
 
 // Ensure Buffer is available in Expo / React Native runtimes.
 const globalWithBuffer = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
+
 globalWithBuffer.Buffer ??= Buffer;
 
 // Export our API.
