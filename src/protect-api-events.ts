@@ -63,11 +63,11 @@
  *
  * @module ProtectApiEvents
  */
+import { inflateSync } from "fflate";
 import type { Nullable } from "./protect-types.js";
 import type { ProtectLogging } from "./protect-logging.js";
-import { getPlatformAdapter } from "./platform/index.js";
 
-const { compression } = getPlatformAdapter();
+const inflate = (input: Uint8Array): Buffer => Buffer.from(inflateSync(input));
 
 // UniFi Protect events API packet header size, in bytes.
 const EVENT_PACKET_HEADER_SIZE = 8;
@@ -220,7 +220,7 @@ export class ProtectApiEvents {
 
     // Check to see if we're compressed or not, and inflate if needed after skipping past the 8-byte header.
     const payload = packet.readUInt8(ProtectEventPacketHeader.DEFLATED) ?
-      compression.inflate(packet.subarray(EVENT_PACKET_HEADER_SIZE)) : packet.subarray(EVENT_PACKET_HEADER_SIZE);
+      inflate(packet.subarray(EVENT_PACKET_HEADER_SIZE)) : packet.subarray(EVENT_PACKET_HEADER_SIZE);
 
     // If it's a header, it can only have one format.
     if(frameType === ProtectEventPacketType.HEADER) {

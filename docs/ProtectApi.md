@@ -48,10 +48,10 @@ protect.on("message", (packet) => {
 
 ## Architecture
 
-The API is built on modern Node.js technologies:
-- **Undici**: High-performance HTTP/1.1 and HTTP/2 client
-- **WebSockets**: Real-time bidirectional communication
-- **EventEmitter**: Node.js event-driven architecture
+The API targets Expo and React Native environments:
+- **Fetch API**: Handles HTTPS requests with automatic cookie management
+- **WebSockets**: Real-time bidirectional communication for events and livestreams
+- **EventEmitter3**: Lightweight event-driven architecture that works across runtimes
 
 ## Authentication
 
@@ -119,9 +119,9 @@ A deep-indexable version of the Protect NVR bootstrap data. We need this if you 
 ### RequestOptions
 
 ```ts
-type RequestOptions = {
-  dispatcher?: Dispatcher;
-} & Omit<Dispatcher.RequestOptions, "origin" | "path">;
+type RequestOptions = Omit<RequestInit, "headers"> & {
+  headers?: Record<string, string>;
+};
 ```
 
 Configuration options for HTTP requests executed by `retrieve()`.
@@ -130,13 +130,12 @@ Configuration options for HTTP requests executed by `retrieve()`.
 
 | Name | Type | Description |
 | ------ | ------ | ------ |
-| `dispatcher?` | `Dispatcher` | Optional custom Undici `Dispatcher` instance to use for this request. If omitted, the native `unifi-protect` dispatcher is used, which should be suitable for most use cases. |
+| `headers?` | `Record<string, string>` | Additional headers to merge with the authentication headers that `unifi-protect` manages automatically. |
 
 #### Remarks
 
-Extends Undici’s [`Dispatcher.RequestOptions`](https://undici.nodejs.org/#/docs/api/Dispatcher.md?id=parameter-requestoptions), but omits the `origin` and
-`path` properties, since those are derived from the `url` argument passed to `retrieve()`. You can optionally supply a custom `Dispatcher` instance to control
-connection pooling, timeouts, etc.
+Wraps the standard Fetch API [`RequestInit`](https://developer.mozilla.org/docs/Web/API/Request/Request#options) while preserving the internal cookie and CSRF
+handling performed by the client.
 
 ## Events
 
@@ -716,7 +715,7 @@ Execute an HTTP request to the Protect controller.
 | Parameter | Type | Description |
 | ------ | ------ | ------ |
 | `url` | `string` | Full URL to request (e.g., `https://192.168.1.1/proxy/protect/api/cameras`) |
-| `options` | [`RequestOptions`](#requestoptions) | Undici-compatible request options |
+| `options` | [`RequestOptions`](#requestoptions) | Fetch-compatible request options |
 | `retrieveOptions` | [`RetrieveOptions`](#retrieveoptions) | Additional options for error handling and timeouts |
 
 ###### Returns
@@ -735,8 +734,8 @@ not covered by the built-in methods. It handles:
 - Error logging and throttling
 - CSRF token management
 
-The `options` parameter extends [Undici's RequestOptions](https://undici.nodejs.org/#/docs/api/Dispatcher.md?id=parameter-requestoptions), providing full control
-over the HTTP request.
+The `options` parameter mirrors the Fetch API's `RequestInit`, letting you override method, headers, and body while the client attaches the required cookies and
+CSRF protection.
 
 ###### Example
 
