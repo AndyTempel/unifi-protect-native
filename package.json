@@ -1,5 +1,5 @@
 {
-  "name": "unifi-protect",
+  "name": "unifi-protect-native",
   "type": "module",
   "version": "4.27.4",
   "displayName": "UniFi Protect API",
