@@ -5,17 +5,17 @@
   "displayName": "UniFi Protect API",
   "description": "A complete implementation of the UniFi Protect API.",
   "author": {
-    "name": "HJD",
-    "url": "https://github.com/hjdhjd"
+    "name": "AndyTempel",
+    "url": "https://github.com/AndyTempel"
   },
-  "homepage": "https://github.com/hjdhjd/unifi-protect#readme",
+  "homepage": "https://github.com/AndyTempel/unifi-protect-native#readme",
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "git://github.com/hjdhjd/unifi-protect.git"
+    "url": "git://github.com/AndyTempel/unifi-protect-native.git"
   },
   "bugs": {
-    "url": "https://github.com/hjdhjd/unifi-protect/issues"
+    "url": "https://github.com/AndyTempel/unifi-protect-native/issues"
   },
   "keywords": [
     "camera",
