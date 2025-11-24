@@ -64,10 +64,27 @@
  * @module ProtectApiEvents
  */
 import { inflateSync } from "fflate";
-import type { Nullable } from "./protect-types.js";
 import type { ProtectLogging } from "./protect-logging.js";
+import type { Nullable } from "./protect-types.js";
 
 const inflate = (input: Uint8Array): Buffer => Buffer.from(inflateSync(input));
+const ensureUint8Array = (packet: Buffer | Uint8Array): Uint8Array => {
+  if(packet instanceof Uint8Array) {
+    return packet;
+  }
+
+  return Uint8Array.from(packet);
+};
+
+const createDataView = (packet: Uint8Array): DataView => new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+
+const decodeUtf8 = (bytes: Uint8Array): string => {
+  if(typeof TextDecoder !== "undefined") {
+    return new TextDecoder().decode(bytes);
+  }
+
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
+};
 
 // UniFi Protect events API packet header size, in bytes.
 const EVENT_PACKET_HEADER_SIZE = 8;
@@ -166,7 +183,10 @@ export class ProtectApiEvents {
    * successfully logged into the Protect controller, events are generated automatically and can be accessed by listening to `message` events emitted by
    * {@link ProtectApi}.
    */
-  public static decodePacket(log: ProtectLogging, packet: Buffer): Nullable<ProtectEventPacket> {
+  public static decodePacket(log: ProtectLogging, packet: Buffer | Uint8Array): Nullable<ProtectEventPacket> {
+
+    const packetView = ensureUint8Array(packet);
+    const dataView = createDataView(packetView);
 
     // What we need to do here is to split this packet into the header and payload, and decode them.
 
@@ -176,10 +196,10 @@ export class ProtectApiEvents {
 
       // The fourth byte holds our payload size. When you add the payload size to our header frame size, you get the location of the
       // data header frame.
-      dataOffset = packet.readUInt32BE(ProtectEventPacketHeader.PAYLOAD_SIZE) + EVENT_PACKET_HEADER_SIZE;
+      dataOffset = dataView.getUint32(ProtectEventPacketHeader.PAYLOAD_SIZE, false) + EVENT_PACKET_HEADER_SIZE;
 
       // Validate our packet size, just in case we have more or less data than we expect. If we do, we're done for now.
-      if(packet.length !== (dataOffset + EVENT_PACKET_HEADER_SIZE + packet.readUInt32BE(dataOffset + ProtectEventPacketHeader.PAYLOAD_SIZE))) {
+      if(packetView.length !== (dataOffset + EVENT_PACKET_HEADER_SIZE + dataView.getUint32(dataOffset + ProtectEventPacketHeader.PAYLOAD_SIZE, false))) {
 
         throw new Error("Packet length doesn't match header information.");
       }
@@ -192,8 +212,8 @@ export class ProtectApiEvents {
     }
 
     // Decode the action and payload frames now that we know where everything is.
-    const headerFrame = this.decodeFrame(log, packet.subarray(0, dataOffset), ProtectEventPacketType.HEADER);
-    const payloadFrame = this.decodeFrame(log, packet.subarray(dataOffset), ProtectEventPacketType.PAYLOAD);
+    const headerFrame = this.decodeFrame(log, packetView.subarray(0, dataOffset), ProtectEventPacketType.HEADER);
+    const payloadFrame = this.decodeFrame(log, packetView.subarray(dataOffset), ProtectEventPacketType.PAYLOAD);
 
     if(!headerFrame || !payloadFrame) {
 
@@ -204,10 +224,13 @@ export class ProtectApiEvents {
   }
 
   // Decode a frame, composed of a header and payload, received through the update events API.
-  private static decodeFrame(log: ProtectLogging, packet: Buffer, packetType: ProtectEventPacketType): Nullable<Buffer | JSON | ProtectEventHeader | string> {
+  private static decodeFrame(log: ProtectLogging, packet: Buffer | Uint8Array, packetType: ProtectEventPacketType): Nullable<Buffer | JSON | ProtectEventHeader | string> {
+
+    const view = ensureUint8Array(packet);
+    const dataView = createDataView(view);
 
     // Read the packet frame type.
-    const frameType = packet.readUInt8(ProtectEventPacketHeader.TYPE) as ProtectEventPacketType;
+    const frameType = dataView.getUint8(ProtectEventPacketHeader.TYPE) as ProtectEventPacketType;
 
     // This isn't the frame type we were expecting - we're done.
     if(packetType !== frameType) {
@@ -216,16 +239,17 @@ export class ProtectApiEvents {
     }
 
     // Read the payload format.
-    const payloadFormat = packet.readUInt8(ProtectEventPacketHeader.PAYLOAD_FORMAT) as EventPayloadType;
+    const payloadFormat = dataView.getUint8(ProtectEventPacketHeader.PAYLOAD_FORMAT) as EventPayloadType;
 
     // Check to see if we're compressed or not, and inflate if needed after skipping past the 8-byte header.
-    const payload = packet.readUInt8(ProtectEventPacketHeader.DEFLATED) ?
-      inflate(packet.subarray(EVENT_PACKET_HEADER_SIZE)) : packet.subarray(EVENT_PACKET_HEADER_SIZE);
+    const isCompressed = dataView.getUint8(ProtectEventPacketHeader.DEFLATED) === 1;
+    const payloadSlice = view.subarray(EVENT_PACKET_HEADER_SIZE);
+    const payload = isCompressed ? inflate(payloadSlice) : payloadSlice;
 
     // If it's a header, it can only have one format.
     if(frameType === ProtectEventPacketType.HEADER) {
 
-      return (payloadFormat === EventPayloadType.JSON) ? JSON.parse(payload.toString()) as ProtectEventHeader : null;
+      return (payloadFormat === EventPayloadType.JSON) ? JSON.parse(decodeUtf8(payload)) as ProtectEventHeader : null;
     }
 
     // Process the payload format accordingly.
@@ -234,15 +258,15 @@ export class ProtectApiEvents {
       case EventPayloadType.JSON:
 
         // If it's data payload, it can be anything.
-        return JSON.parse(payload.toString()) as JSON;
+        return JSON.parse(decodeUtf8(payload)) as JSON;
 
       case EventPayloadType.STRING:
 
-        return payload.toString("utf8");
+        return decodeUtf8(payload);
 
       case EventPayloadType.BUFFER:
 
-        return payload;
+        return Buffer.from(payload);
 
       default:
 
