@@ -1850,7 +1850,6 @@ export class ProtectApi extends EventEmitter {
     if(custom) {
 
       for(const [ key, value ] of Object.entries(custom)) {
-
         if(value !== undefined) {
 
           headers.set(key, value);

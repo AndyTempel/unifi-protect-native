@@ -69,7 +69,11 @@ import type { Nullable } from "./protect-types.js";
 
 const inflate = (input: Uint8Array): Buffer => Buffer.from(inflateSync(input));
 const ensureUint8Array = (packet: Buffer | Uint8Array): Uint8Array => {
+
+
   if(packet instanceof Uint8Array) {
+
+
     return packet;
   }
 
@@ -79,7 +83,11 @@ const ensureUint8Array = (packet: Buffer | Uint8Array): Uint8Array => {
 const createDataView = (packet: Uint8Array): DataView => new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
 
 const decodeUtf8 = (bytes: Uint8Array): string => {
+
+
   if(typeof TextDecoder !== "undefined") {
+
+
     return new TextDecoder().decode(bytes);
   }
 
