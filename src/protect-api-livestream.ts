@@ -288,7 +288,7 @@ export class ProtectLivestream extends EventEmitter {
 
           this.ws.binaryType = "arraybuffer";
 
-        } catch {
+        } catch{
 
           // best effort; older environments might not support binaryType.
         }
@@ -431,7 +431,10 @@ export class ProtectLivestream extends EventEmitter {
       }
 
       if(!ab) {
+
+
         this.log.debug("No data to process in livestream message.");
+
         return;
       }
 

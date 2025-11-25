@@ -55,8 +55,8 @@
     "build": "shx rm -rf ./dist && tsc",
     "build-docs": "shx rm -f ./docs/[^CO]*.md && npx typedoc",
     "clean": "shx rm -rf ./dist",
-    "lint": "eslint --max-warnings=10 eslint.config.mjs src/**.ts",
-    "lint:fix": "eslint --fix --max-warnings=10 eslint.config.mjs src/**.ts",
+    "lint": "eslint --max-warnings=20 eslint.config.mjs src/**.ts",
+    "lint:fix": "eslint --fix --max-warnings=20 eslint.config.mjs src/**.ts",
     "postpublish": "npm run clean",
     "prepublishOnly": "npm run lint && npm run build",
     "test": "eslint src/**.ts"

@@ -1693,6 +1693,7 @@ export class ProtectApi extends EventEmitter {
     try {
 
       const verb = (restOptions.method ?? options.method ?? "GET").toUpperCase();
+
       this.log.debug("HTTP %s %s", verb, url);
 
       const now = Date.now();
