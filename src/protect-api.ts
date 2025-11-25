@@ -58,6 +58,7 @@
  *
  * @module ProtectApi
  */
+import EventEmitter from "eventemitter3";
 import { ProtectApiEvents } from "./protect-api-events.js";
 import { ProtectLivestream } from "./protect-api-livestream.js";
 import type { ProtectLogging } from "./protect-logging.js";
@@ -67,7 +68,6 @@ import type {
   ProtectNvrConfigPayload, ProtectNvrUserConfig, ProtectSensorConfig, ProtectSensorConfigPayload, ProtectViewerConfig, ProtectViewerConfigPayload
 } from "./protect-types.js";
 import { PROTECT_API_ERROR_LIMIT, PROTECT_API_RETRY_INTERVAL, PROTECT_API_TIMEOUT } from "./settings.js";
-import EventEmitter from "eventemitter3";
 
 type PlatformWebSocket = WebSocket;
 
@@ -92,6 +92,7 @@ export type ProtectNvrBootstrapData = Nullable<DeepIndexable<ProtectNvrBootstrap
 type ProtectMessageEvent = MessageEvent & { data: ArrayBuffer | ArrayBufferView | Blob | string };
 type ProtectErrorEvent = Event & { message?: string; error?: unknown };
 type ErrnoLike = Error & { code?: string };
+type NativeCookieManager = Awaited<typeof import("@react-native-cookies/cookies")>["default"];
 
 const formatError = (value: unknown): string => {
 
@@ -113,6 +114,29 @@ const formatError = (value: unknown): string => {
 
     return String(value);
   }
+};
+
+const getNavigatorProduct = (): string | undefined => {
+
+  const globalNavigator = (globalThis as typeof globalThis & { navigator?: { product?: string } }).navigator;
+
+  return globalNavigator?.product;
+};
+
+const isReactNativeRuntime = (): boolean => getNavigatorProduct() === "ReactNative";
+
+let nativeCookieManagerPromise: Promise<Nullable<NativeCookieManager>> | null = null;
+
+const getNativeCookieManager = async (): Promise<Nullable<NativeCookieManager>> => {
+
+  if(!isReactNativeRuntime()) {
+
+    return null;
+  }
+
+  nativeCookieManagerPromise ??= import("@react-native-cookies/cookies").then((module) => module?.default ?? null).catch(() => null);
+
+  return nativeCookieManagerPromise;
 };
 
 /**
@@ -415,6 +439,7 @@ export class ProtectApi extends EventEmitter {
     this.username = username;
     this.password = password;
 
+    await this.clearCookieJar();
     this.logout();
 
     // Let's attempt to login.
@@ -425,6 +450,25 @@ export class ProtectApi extends EventEmitter {
 
     // Return the status of our login attempt.
     return loginSuccess;
+  }
+
+  private async clearCookieJar(): Promise<void> {
+
+    try {
+
+      const cookieManager = await getNativeCookieManager();
+
+      if(!cookieManager?.clearAll) {
+
+        return;
+      }
+
+      await cookieManager.clearAll(true);
+
+    } catch(error) {
+
+      this.log.debug("Unable to clear UniFi Protect cookie jar: %s", formatError(error));
+    }
   }
 
   // Login to the UniFi Protect API.
@@ -566,6 +610,7 @@ export class ProtectApi extends EventEmitter {
    * @internal
    */
   private async launchEventsWs(): Promise<boolean> {
+
 
     // Log us in if needed.
     if(!(await this.loginController())) {
@@ -1488,10 +1533,18 @@ export class ProtectApi extends EventEmitter {
 
     try {
 
-      const responseJson = await response.json() as Record<string, string>;
+      const responseJson = await response.json() as { url?: string; directUrl?: string };
+      const endpointUrl = responseJson.directUrl || responseJson.url || false;
 
-      // Adjust the URL for our address.
-      const responseUrl = new URL(responseJson.url);
+      if(!endpointUrl) {
+
+        this.log.error("Protect controller did not return a websocket URL.");
+
+        return null;
+      }
+
+      // Adjust the URL for our address. Prefer directUrl to avoid the proxy when available (livestream needs init segments from :7446).
+      const responseUrl = new URL(endpointUrl);
 
       responseUrl.hostname = this.nvrAddress;
 
@@ -1639,6 +1692,9 @@ export class ProtectApi extends EventEmitter {
 
     try {
 
+      const verb = (restOptions.method ?? options.method ?? "GET").toUpperCase();
+      this.log.debug("HTTP %s %s", verb, url);
+
       const now = Date.now();
 
       if(this.apiErrorCount >= PROTECT_API_ERROR_LIMIT) {
@@ -1673,6 +1729,8 @@ export class ProtectApi extends EventEmitter {
       }
 
       const response = await fetch(url, fetchOptions);
+
+      this.log.debug("HTTP %s %s -> %s", verb, url, response.status);
 
       if(!retrieveOptions.decodeResponse) {
 
@@ -1719,7 +1777,9 @@ export class ProtectApi extends EventEmitter {
 
       this.apiErrorCount++;
 
-      if((error instanceof DOMException) && (error.name === "AbortError")) {
+      const isAbortError = typeof error === "object" && error !== null && "name" in error && (error as { name?: string }).name === "AbortError";
+
+      if(isAbortError) {
 
         logError("Protect controller is taking too long to respond to a request. This error can usually be safely ignored.");
 
@@ -1728,7 +1788,7 @@ export class ProtectApi extends EventEmitter {
 
       if(error instanceof TypeError) {
 
-        const cause = error.cause as ErrnoLike | undefined;
+        const cause = (error as TypeError & { cause?: ErrnoLike }).cause;
 
         switch(cause?.code) {
 
@@ -1850,6 +1910,8 @@ export class ProtectApi extends EventEmitter {
     if(custom) {
 
       for(const [ key, value ] of Object.entries(custom)) {
+
+
         if(value !== undefined) {
 
           headers.set(key, value);

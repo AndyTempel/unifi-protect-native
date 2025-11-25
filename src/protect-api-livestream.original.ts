@@ -42,17 +42,14 @@
  * @module ProtectLivestream
  */
 /* eslint-enable @stylistic/max-len */
-import { Buffer } from "buffer";
-import EventEmitter from "eventemitter3";
+import events, { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+import util from "node:util";
+import { Agent, type ErrorEvent, type MessageEvent, WebSocket } from "undici";
 import type { ProtectApi } from "./protect-api.js";
 import type { ProtectLogging } from "./protect-logging.js";
 import type { Nullable } from "./protect-types.js";
 import { PROTECT_API_TIMEOUT } from "./settings.js";
-
-const globalWithBuffer = globalThis as typeof globalThis & { Buffer?: typeof Buffer };
-
-globalWithBuffer.Buffer ??= Buffer;
-type PlatformWebSocket = WebSocket;
 
 // A complete description of the UniFi Protect livestream API websocket API.
 enum ProtectLiveFrame {
@@ -76,6 +73,8 @@ enum ProtectLiveFrame {
  * @property lens             - Optionally specify alternate cameras on a Protect device, such as a package camera.
  * @property segmentLength    - Optionally specify the segment length, in milliseconds, of each fMP4 segment. Defaults to 100ms.
  * @property requestId        - Optionally specify a request ID to the Protect controller. This is primarily used for logging purposes.
+ * @property useStream        - If `true`, a Node.js Readable stream interface will be created for consuming raw fMP4 segments instead of using EventEmitter events.
+ *                              Defaults to false.
  */
 export interface LivestreamOptions {
 
@@ -84,6 +83,7 @@ export interface LivestreamOptions {
   lens: number;
   requestId: string;
   segmentLength: number;
+  useStream: boolean;
 }
 
 /**
@@ -122,14 +122,16 @@ export class ProtectLivestream extends EventEmitter {
 
   private _initSegment: Nullable<Buffer>;
   private _codec: Nullable<string>;
+  private _stream: Nullable<Readable>;
+  private agent: Nullable<Agent>;
   private api: ProtectApi;
-  private errorHandler: Nullable<(event: Event) => void>;
-  private heartbeat: Nullable<ReturnType<typeof setInterval>>;
+  private errorHandler: Nullable<(event: ErrorEvent) => void>;
+  private heartbeat: Nullable<NodeJS.Timeout>;
   private initSegmentPromise?: Promise<Buffer>;
   private lastMessage: number;
   private log: ProtectLogging;
   private messageHandler: Nullable<(event: MessageEvent) => void>;
-  private ws: Nullable<PlatformWebSocket>;
+  private ws: Nullable<WebSocket>;
 
   // Create a new instance.
   constructor(api: ProtectApi, log: ProtectLogging) {
@@ -139,6 +141,8 @@ export class ProtectLivestream extends EventEmitter {
 
     this._codec = null;
     this._initSegment = null;
+    this._stream = null;
+    this.agent = null;
     this.api = api;
     this.errorHandler = null;
     this.heartbeat = null;
@@ -164,7 +168,8 @@ export class ProtectLivestream extends EventEmitter {
    * @event segment     - Emitted with each complete non-initialization segment Buffer containing MOOF/MDAT pairs (stream mode disabled only).
    * @event timestamps  - Emitted with decode timestamp arrays when extendedVideoMetadata is enabled in options.
    *
-  * @remarks Once a livestream session has started, the following events can be listened for:
+   * @remarks Once a livestream session has started, the following events can be listened for (unless you've specified `useStream` in `options`, in which case only the
+   *          `close` event is available):
    *
    * | Event         | Description                                                                                                                                  |
    * |---------------|----------------------------------------------------------------------------------------------------------------------------------------------|
@@ -182,6 +187,7 @@ export class ProtectLivestream extends EventEmitter {
     options.lens ??= 0;
     options.requestId ??= cameraId + "-" + channel.toString();
     options.segmentLength ??= 100;
+    options.useStream ??= false;
 
     // Stop any existing stream.
     this.stop();
@@ -211,6 +217,13 @@ export class ProtectLivestream extends EventEmitter {
 
       this.ws?.removeEventListener("error", this.errorHandler);
       this.errorHandler = null;
+    }
+
+    // If we've created a stream, end it gracefully.
+    if(this._stream) {
+
+      this._stream.push(null);
+      this._stream = null;
     }
 
     // Flag that we are no longer running.
@@ -278,28 +291,34 @@ export class ProtectLivestream extends EventEmitter {
 
     try {
 
-      this.ws = new WebSocket(wsUrl);
-      this.log.debug(options.requestId + ": connecting to the livestream websocket API at %s", wsUrl);
+      // Configure our agent to ensure we don't enable keepalive or HTTP pipelining so we can quickly tear down the connection when needed.
+      this.agent = new Agent({
 
-      if(this.ws instanceof WebSocket) {
+        connect: {
 
-        // React Native's WebSocket supports binaryType.
-        try {
+          keepAlive: false,
+          rejectUnauthorized: false
+        },
+        pipelining: 0
+      });
 
-          this.ws.binaryType = "arraybuffer";
+      // Open the livestream WebSocket. We create a new dispatcher here because WebSocket upgrades can only happen over HTTP/1.1 and we've asked for HTTP/2 whenever
+      // possible in our global pool.
+      this.ws = new WebSocket(wsUrl, { dispatcher: this.agent });
 
-        } catch {
+      // The user's requested that we use a stream interface instead of an event interface to push complete fMP4 segments.
+      if(options.useStream) {
 
-          // best effort; older environments might not support binaryType.
-        }
+        this._stream = new Readable({
+
+          // This is intentionally a no-op, since we're going to push complete fMP4 segments as soon as they're available.
+          read:(): void => {}
+        });
       }
 
       // Start our heartbeat once we've opened the connection.
       this.ws.addEventListener("open", () => {
 
-        this.log.debug(options.requestId + ": connected to the livestream websocket API.");
-
-        // Initialize our last message time.
         this.lastMessage = Date.now();
 
         // Heartbeat the controller. We need this because if we don't heartbeat the controller, it can sometimes just decide not to give us a livestream to work with, or
@@ -335,13 +354,21 @@ export class ProtectLivestream extends EventEmitter {
       }, { once: true });
 
       // Catch any errors and inform the user, if needed.
-      this.ws.addEventListener("error", this.errorHandler = (): void => {
+      this.ws.addEventListener("error", this.errorHandler = (event: ErrorEvent): void => {
 
-        logError("error while communicating with the livestream websocket API.");
+        const error = event.error as NodeJS.ErrnoException;
+
+        // Ignore timeout errors, but notify the user about anything else.
+        if(!(error instanceof TypeError) && (error.code !== "ETIMEDOUT")) {
+
+          logError("error while communicating with the livestream websocket API: %s", error);
+          logError(util.inspect(error, { colors: true, depth: null, sorted: true }));
+        }
+
         this.stop();
       }, { once: true });
 
-      this.ws.addEventListener("close", () => {
+      this.ws.addEventListener("close", async () => {
 
         // Clear out our heartbeat since we're closing.
         if(this.heartbeat) {
@@ -351,6 +378,9 @@ export class ProtectLivestream extends EventEmitter {
         }
 
         this.stop();
+
+        await this.agent?.destroy();
+        this.agent = null;
 
         this.emit("close");
       }, { once: true });
@@ -431,7 +461,7 @@ export class ProtectLivestream extends EventEmitter {
       }
 
       if(!ab) {
-        this.log.debug("No data to process in livestream message.");
+
         return;
       }
 
@@ -503,10 +533,16 @@ export class ProtectLivestream extends EventEmitter {
 
             completeSegment = Buffer.concat([ currentSegment.moof, currentSegment.mdat, currentSegment.video, currentSegment.audio ]);
 
-            this.emit("segment", completeSegment);
-            this.emit("message", completeSegment);
-            this.emit("moof", currentSegment.moof);
-            this.emit("mdat", currentSegment.mdat);
+            if(this._stream) {
+
+              this._stream.push(completeSegment);
+            } else {
+
+              this.emit("segment", completeSegment);
+              this.emit("message", completeSegment);
+              this.emit("moof", currentSegment.moof);
+              this.emit("mdat", currentSegment.mdat);
+            }
 
             break;
 
@@ -514,7 +550,11 @@ export class ProtectLivestream extends EventEmitter {
           case ProtectLiveFrame.CODECINFORMATION:
 
             this._codec = data.toString();
-            this.emit("codec", this.codec);
+
+            if(!this._stream) {
+
+              this.emit("codec", this.codec);
+            }
 
             // Inform the user about what codec is used in the livestream.
             this.log.debug("Livestream codec information: %s", data);
@@ -538,8 +578,15 @@ export class ProtectLivestream extends EventEmitter {
           case ProtectLiveFrame.INITSEGMENT:
 
             this._initSegment = data;
-            this.emit("initsegment", this._initSegment);
-            this.emit("message", this._initSegment);
+
+            if(this._stream) {
+
+              this._stream.push(this._initSegment);
+            } else {
+
+              this.emit("initsegment", this._initSegment);
+              this.emit("message", this._initSegment);
+            }
 
             break;
 
@@ -602,10 +649,7 @@ export class ProtectLivestream extends EventEmitter {
     }
 
     // Cache a promise that resolves when the initsegment event is emitted. We need to wait until the initialization segment is seen and then return it.
-    return this.initSegmentPromise ??= new Promise((resolve) => {
-
-      this.once("initsegment", () => resolve(this.initSegment as Buffer));
-    });
+    return this.initSegmentPromise ??= events.once(this, "initsegment").then(() => this.initSegment as Buffer);
   }
 
   /**
@@ -632,4 +676,12 @@ export class ProtectLivestream extends EventEmitter {
     return this._codec ?? "";
   }
 
+  /**
+   * Retrieve a Node.js Readable stream if `useStream` was set to true (defaults to false) when starting the livestream.
+   * Otherwise, returns `null`.
+   */
+  public get stream(): Nullable<Readable> {
+
+    return this._stream;
+  }
 }
